@@ -40,85 +40,76 @@ class PGDAttack:
         performs random initialization and early stopping, depending on the 
         self.rand_init and self.early_stop flags.
         """
-        self.model.eval() # Ensure model is in evaluation mode
-        x_orig = x.clone().detach() # Store original images
-        x_adv = x.clone().detach() # Initialize adversarial examples
+        self.model.eval()
+        x_orig = x.clone().detach()
+        x_adv = x.clone().detach()
         device = x.device
+        batch_size = x.size(0)
 
-        # Optional: Random Initialization
         if self.rand_init:
             noise = torch.zeros_like(x_adv).uniform_(-self.eps, self.eps)
-            # Apply noise and immediately clamp/project to ensure initial validity
             x_adv = torch.clamp(x_adv + noise, 0., 1.)
-            # Project x_adv to be within eps-ball of x_orig
             x_adv = torch.max(torch.min(x_adv, x_orig + self.eps), x_orig - self.eps)
-            x_adv = x_adv.detach() # Detach after modification
+            x_adv = x_adv.detach()
 
-        # PGD iterations
+        has_succeeded = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        x_adv_best = x_adv.clone().detach()
+
         for i in range(self.n):
-            # Clone and set requires_grad for the current iteration's input
+            active_mask = ~has_succeeded
+            if self.early_stop and not active_mask.any():
+                # add the following line to check if the early_stop works, thats how i tested it
+                # print(f"Early stopping triggered at iteration {i+1}/{self.n}")
+                break
+
             x_adv_iter = x_adv.clone().detach().requires_grad_(True)
-
-            # Forward pass
             outputs = self.model(x_adv_iter)
-            # Calculate per-sample loss using the correct labels (y)
             loss_per_sample = self.loss_func(outputs, y)
+            scalar_loss = loss_per_sample.mean()
 
-            # Calculate the mean loss across the batch to get a scalar
-            scalar_loss = loss_per_sample.mean() # <-- FIX: Get scalar loss
-
-            # Determine objective based on attack type (for update direction, not backward call)
-            # We always want the gradient of the actual mean loss
-            objective_for_update = scalar_loss # Use mean loss for gradient calculation
-
-            # Zero gradients, compute gradients via backward() on the scalar objective
             self.model.zero_grad()
-            objective_for_update.backward() # <-- FIX: Call backward on the scalar loss
+            scalar_loss.backward()
 
-            # Ensure grad attribute exists
             if x_adv_iter.grad is None:
                 print(f"Warning: No gradient computed for x_adv_iter at iteration {i}. Skipping update.")
-                # Detach x_adv before next iteration if we skip update
                 x_adv = x_adv.detach()
                 continue
 
-            # Get the sign of the gradient stored in the .grad attribute
             grad_sign = x_adv_iter.grad.sign()
-
-            # Detach x_adv before modifying it based on the gradient
             x_adv = x_adv.detach()
 
-            # Calculate the update step based on attack type
             if targeted:
-                # Minimize loss: move opposite to the gradient direction
                 update = -self.alpha * grad_sign
             else:
-                # Maximize loss: move along the gradient direction
-                # Ascending the gradient of the mean loss should generally increase loss
                 update = self.alpha * grad_sign
 
-            # Apply the update step
-            x_adv = x_adv + update
+            x_adv[active_mask] = x_adv[active_mask] + update[active_mask]
 
-            # --- Projection Steps ---
-            # Project perturbation (eta) back into L-inf ball around x_orig
             eta = x_adv - x_orig
             eta = torch.clamp(eta, min=-self.eps, max=self.eps)
-            # Apply clamped perturbation and clamp result to valid image range [0, 1]
             x_adv = torch.clamp(x_orig + eta, min=0., max=1.)
-
-            # Detach for the next iteration or final return
             x_adv = x_adv.detach()
 
-        # --- Final Assertions (Optional but Recommended) ---
-        tolerance = 1e-6
-        assert torch.all(x_adv >= 0. - tolerance) and torch.all(x_adv <= 1. + tolerance), \
-            "Final x_adv values out of [0, 1] range"
-        assert torch.all(torch.abs(x_adv - x_orig) <= self.eps + tolerance), \
-            f"Final max perturbation {torch.max(torch.abs(x_adv - x_orig))} exceeds eps {self.eps}"
+            if self.early_stop:
+                 with torch.no_grad():
+                    outputs_check = self.model(x_adv)
+                    predicted_check = torch.argmax(outputs_check, dim=1)
+                    if targeted:
+                        current_success = (predicted_check == y)
+                    else:
+                        current_success = (predicted_check != y)
+                    newly_succeeded_mask = current_success & (~has_succeeded)
+                    has_succeeded = torch.logical_or(has_succeeded, current_success)
+                    x_adv_best[newly_succeeded_mask] = x_adv[newly_succeeded_mask]
 
-        # Return the result after n iterations (ignoring early stopping logic for now)
-        return x_adv
+        tolerance = 1e-6
+        final_result = x_adv_best if self.early_stop else x_adv
+        assert torch.all(final_result >= 0. - tolerance) and torch.all(final_result <= 1. + tolerance), \
+            "Final x_adv values out of [0, 1] range"
+        assert torch.all(torch.abs(final_result - x_orig) <= self.eps + tolerance), \
+            f"Final max perturbation {torch.max(torch.abs(final_result - x_orig))} exceeds eps {self.eps}"
+
+        return final_result
 
 
 class NESBBoxPGDAttack:
@@ -159,6 +150,43 @@ class NESBBoxPGDAttack:
         self.early_stop = early_stop
         self.loss_func = nn.CrossEntropyLoss(reduction='none')
 
+    def _nes_gradient_estimate(self, x_adv, y, n_queries_per_sample):
+        """
+        Estimates the gradient using NES with antithetic sampling.
+        Returns the estimated gradient and updates query counts.
+        """
+        batch_size = x_adv.size(0)
+        channels = x_adv.size(1)
+        height = x_adv.size(2)
+        width = x_adv.size(3)
+        device = x_adv.device
+
+        # Initialize gradient estimate tensor
+        grad_estimate = torch.zeros_like(x_adv, device=device)
+
+        self.model.eval() # Ensure model is in eval mode for queries
+
+        with torch.no_grad(): # No gradients needed for model queries
+            for _ in range(self.k):
+                # Generate Gaussian noise
+                u = torch.randn_like(x_adv, device=device)
+                x_query_plus = x_adv + self.sigma * u
+                x_query_minus = x_adv - self.sigma * u
+                x_query_plus = torch.clamp(x_query_plus, 0., 1.)
+                x_query_minus = torch.clamp(x_query_minus, 0., 1.)
+                outputs_plus = self.model(x_query_plus)
+                outputs_minus = self.model(x_query_minus)
+                
+                loss_plus = self.loss_func(outputs_plus, y)
+                loss_minus = self.loss_func(outputs_minus, y)
+                loss_diff_reshaped = (loss_plus - loss_minus).view(-1, 1, 1, 1)
+                grad_estimate += loss_diff_reshaped * u
+
+            # Final gradient estimate (average over k samples, scale by 1/(2*sigma))
+            grad_estimate = grad_estimate / (2. * self.k * self.sigma)
+
+        return grad_estimate, n_queries_per_sample
+
     def execute(self, x, y, targeted=False):
         """
         Executes the attack on a batch of samples x. y contains the true labels 
@@ -169,7 +197,78 @@ class NESBBoxPGDAttack:
         2- A vector with dimensionality len(x) containing the number of queries for
             each sample in x.
         """
-        pass  # FILL ME
+        self.model.eval()
+        x_orig = x.clone().detach()
+        x_adv = x.clone().detach()
+        device = x.device
+        batch_size = x.size(0)
+
+        n_queries_per_sample = torch.zeros(batch_size, dtype=torch.float32, device='cpu')
+
+        if self.rand_init:
+            noise = torch.zeros_like(x_adv).uniform_(-self.eps, self.eps)
+            x_adv = torch.clamp(x_adv + noise, 0., 1.)
+            x_adv = torch.max(torch.min(x_adv, x_orig + self.eps), x_orig - self.eps)
+            x_adv = x_adv.detach()
+
+        has_succeeded = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        x_adv_best = x_adv.clone().detach()
+
+        momentum_grad = torch.zeros_like(x_adv, device=device)
+
+        for i in range(self.n):
+            active_mask = ~has_succeeded
+            if self.early_stop and not active_mask.any():
+                # print(f"BB Early stopping at iteration {i+1}/{self.n}") # Optional debug
+                break
+
+            # NES Gradient Estimation
+            grad_est, n_queries_per_sample = self._nes_gradient_estimate(x_adv, y, n_queries_per_sample)
+            # practicly right now I run the model on successful attacks as well for code siplicity, but if 
+            # I needed to use minimum queries really, I wouldn't run them so I don't envolve them in the count
+            n_queries_per_sample += 2 * self.k * ~has_succeeded.to("cpu")
+
+            # Incorporate momentum
+            # Normalize gradient estimate (using L1 norm)
+            grad_flat = grad_est.view(batch_size, -1)
+            l1_norm = torch.linalg.norm(grad_flat, ord=1, dim=1)
+            norm_reshaped = l1_norm.view(-1, 1, 1, 1) + 1e-12 # Added epsilon for stability to avoid dividing by 0
+            normalized_grad = grad_est / norm_reshaped
+            momentum_grad = self.momentum * momentum_grad + normalized_grad
+
+            grad_sign = momentum_grad.sign()
+            x_adv = x_adv.detach()
+
+            if targeted:
+                update = -self.alpha * grad_sign
+            else:
+                update = self.alpha * grad_sign
+            x_adv[active_mask] = x_adv[active_mask] + update[active_mask]
+
+            eta = x_adv - x_orig
+            eta = torch.clamp(eta, min=-self.eps, max=self.eps)
+            x_adv = torch.clamp(x_orig + eta, min=0., max=1.)
+            x_adv = x_adv.detach()
+
+            if self.early_stop:
+                 with torch.no_grad():
+                    outputs_check = self.model(x_adv)
+                    n_queries_per_sample += 1 # I think this counts as part of the queries count, right?
+                    predicted_check = torch.argmax(outputs_check, dim=1)
+                    if targeted:
+                        current_success = (predicted_check == y)
+                    else:
+                        current_success = (predicted_check != y)
+                    newly_succeeded_mask = current_success & (~has_succeeded) # Nice trick ha?
+                    has_succeeded = torch.logical_or(has_succeeded, current_success)
+                    x_adv_best[newly_succeeded_mask] = x_adv[newly_succeeded_mask]
+
+        tolerance = 1e-6
+        final_result = x_adv_best if self.early_stop else x_adv
+        assert torch.all(final_result >= 0. - tolerance) and torch.all(final_result <= 1. + tolerance)
+        assert torch.all(torch.abs(final_result - x_orig) <= self.eps + tolerance)
+
+        return final_result, n_queries_per_sample.cpu()
 
 
 class PGDEnsembleAttack:

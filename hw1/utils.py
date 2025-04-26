@@ -72,35 +72,26 @@ def run_whitebox_attack(attack, data_loader, targeted, device, n_classes=4):
     """
     all_x_adv_list = []
     all_y_list = []
-    model = attack.model # Get model reference from attack object
-    model.eval()     # Ensure model is in eval mode
+    model = attack.model
+    model.eval()
 
     for x_batch, y_batch_true in data_loader:
-        # Move data to the designated device
         x_batch_dev = x_batch.to(device)
         y_batch_true_dev = y_batch_true.to(device)
-
         if targeted:
             # Generate random target labels different from true labels
-            # Ensure offset is between 1 and n_classes-1
             offset = torch.randint(1, n_classes, (y_batch_true_dev.size(0),), device=device)
             y_batch_target_dev = (y_batch_true_dev + offset) % n_classes
-
-            # Execute targeted attack
             x_batch_adv = attack.execute(x_batch_dev, y_batch_target_dev, targeted=True)
-
-            # Store results (move back to CPU for collection)
+            # I used the .cpu() everywhere because i read somewhere that some where that it can consume GPU memory 
+            # unnecessarily and can lead to out-of-memory errors if the dataset is large so i dont take the risk :)
             all_x_adv_list.append(x_batch_adv.cpu().detach())
-            all_y_list.append(y_batch_target_dev.cpu().detach()) # Store target labels
+            all_y_list.append(y_batch_target_dev.cpu().detach())
         else:
-            # Execute untargeted attack
             x_batch_adv = attack.execute(x_batch_dev, y_batch_true_dev, targeted=False)
-
-            # Store results (move back to CPU for collection)
             all_x_adv_list.append(x_batch_adv.cpu().detach())
-            all_y_list.append(y_batch_true_dev.cpu().detach()) # Store true labels
+            all_y_list.append(y_batch_true_dev.cpu().detach())
 
-    # Concatenate all batch results into single tensors
     final_x_adv = torch.cat(all_x_adv_list, dim=0)
     final_y = torch.cat(all_y_list, dim=0)
 
@@ -119,7 +110,32 @@ def run_blackbox_attack(attack, data_loader, targeted, device, n_classes=4):
        case of targeted attacks.
     3- The number of queries made to create each adversarial example.
     """
-    pass  # FILL ME
+    all_x_adv_list = []
+    all_y_list = []
+    all_n_queries_list = []
+    model = attack.model
+    model.eval()
+
+    for x_batch, y_batch_true in data_loader:
+        x_batch_dev = x_batch.to(device)
+        y_batch_true_dev = y_batch_true.to(device)
+        if targeted:
+            offset = torch.randint(1, n_classes, (y_batch_true_dev.size(0),), device=device)
+            y_labels_dev = (y_batch_true_dev + offset) % n_classes
+        else:
+            y_labels_dev = y_batch_true_dev
+        # Execute the black-box attack
+        x_batch_adv, n_queries_batch = attack.execute(x_batch_dev, y_labels_dev, targeted=targeted)
+
+        all_x_adv_list.append(x_batch_adv.cpu().detach())
+        all_y_list.append(y_labels_dev.cpu().detach())
+        all_n_queries_list.append(n_queries_batch)
+
+    final_x_adv = torch.cat(all_x_adv_list, dim=0)
+    final_y = torch.cat(all_y_list, dim=0)
+    final_n_queries = torch.cat(all_n_queries_list, dim=0)
+
+    return final_x_adv, final_y, final_n_queries
 
 
 def compute_attack_success(model, x_adv, y, batch_size, targeted, device):
