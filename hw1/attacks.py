@@ -40,133 +40,85 @@ class PGDAttack:
         performs random initialization and early stopping, depending on the 
         self.rand_init and self.early_stop flags.
         """
-        x_orig = x.clone().detach()
+        self.model.eval() # Ensure model is in evaluation mode
+        x_orig = x.clone().detach() # Store original images
+        x_adv = x.clone().detach() # Initialize adversarial examples
         device = x.device
-
-        # Initialize adversarial examples
-        x_adv = x.clone().detach()
 
         # Optional: Random Initialization
         if self.rand_init:
-            # Generate uniform noise in [-eps, eps]
-            random_noise = torch.zeros_like(x_adv).uniform_(-self.eps, self.eps)
-            # Add noise and immediately clamp/project to ensure initial validity
-            x_adv = x_adv + random_noise
-            # Clamp to valid image range [0, 1]
-            x_adv = torch.clamp(x_adv, min=0., max=1.)
-             # Project x_adv to be within eps-ball of x_orig
+            noise = torch.zeros_like(x_adv).uniform_(-self.eps, self.eps)
+            # Apply noise and immediately clamp/project to ensure initial validity
+            x_adv = torch.clamp(x_adv + noise, 0., 1.)
+            # Project x_adv to be within eps-ball of x_orig
             x_adv = torch.max(torch.min(x_adv, x_orig + self.eps), x_orig - self.eps)
-            # Detach after modification
+            x_adv = x_adv.detach() # Detach after modification
+
+        # PGD iterations
+        for i in range(self.n):
+            # Clone and set requires_grad for the current iteration's input
+            x_adv_iter = x_adv.clone().detach().requires_grad_(True)
+
+            # Forward pass
+            outputs = self.model(x_adv_iter)
+            # Calculate per-sample loss using the correct labels (y)
+            loss_per_sample = self.loss_func(outputs, y)
+
+            # Calculate the mean loss across the batch to get a scalar
+            scalar_loss = loss_per_sample.mean() # <-- FIX: Get scalar loss
+
+            # Determine objective based on attack type (for update direction, not backward call)
+            # We always want the gradient of the actual mean loss
+            objective_for_update = scalar_loss # Use mean loss for gradient calculation
+
+            # Zero gradients, compute gradients via backward() on the scalar objective
+            self.model.zero_grad()
+            objective_for_update.backward() # <-- FIX: Call backward on the scalar loss
+
+            # Ensure grad attribute exists
+            if x_adv_iter.grad is None:
+                print(f"Warning: No gradient computed for x_adv_iter at iteration {i}. Skipping update.")
+                # Detach x_adv before next iteration if we skip update
+                x_adv = x_adv.detach()
+                continue
+
+            # Get the sign of the gradient stored in the .grad attribute
+            grad_sign = x_adv_iter.grad.sign()
+
+            # Detach x_adv before modifying it based on the gradient
             x_adv = x_adv.detach()
 
-        # --- PGD iterations ---
-        # Track which samples have already met the attack goal (for early stopping)
-        batch_size = x.size(0)
-        # Initialize all as not succeeded (False)
-        has_succeeded = torch.zeros(batch_size, dtype=torch.bool, device=device)
-        # Store the best adversarial example found so far for each sample (useful for early stopping)
-        x_adv_best = x_adv.clone().detach()
-
-        for i in range(self.n):
-
-            # Create a mask for samples that still need processing
-            active_mask = ~has_succeeded
-            # If all samples have succeeded and early stopping is enabled, break
-            if self.early_stop and not active_mask.any():
-                # print(f"Early stopping at iteration {i}") # Optional debug
-                break
-
-            # Only compute gradients for active samples if possible (optimization, but complex)
-            # Simpler: compute for all, but only update active ones
-            x_adv_batch = x_adv.clone().detach().requires_grad_(True)
-
-            # Forward pass through the model
-            outputs = self.model(x_adv_batch)
-
-            # Calculate the loss based on attack type (per sample)
-            loss = self.loss_func(outputs, y)
-
-            # Zero out previous gradients
-            self.model.zero_grad()
-
-            # Calculate gradients based on attack type
+            # Calculate the update step based on attack type
             if targeted:
-                # Minimize loss w.r.t target label y
-                # We want to take a step *down* the gradient
-                objective = loss.sum() # Sum losses for backward pass
+                # Minimize loss: move opposite to the gradient direction
+                update = -self.alpha * grad_sign
             else:
-                # Maximize loss w.r.t true label y (minimize -loss)
-                # We want to take a step *up* the gradient
-                objective = (-loss).sum() # Sum losses for backward pass
+                # Maximize loss: move along the gradient direction
+                # Ascending the gradient of the mean loss should generally increase loss
+                update = self.alpha * grad_sign
 
-            # Perform backpropagation
-            objective.backward()
-
-            # Get the gradient sign
-            # Ensure grad exists even if requires_grad was False for some reason
-            if x_adv_batch.grad is None:
-                 continue # Should not happen if requires_grad_(True) worked
-            grad_sign = x_adv_batch.grad.sign()
-
-            # --- Update Step ---
-            # Calculate the update based on targeted/untargeted goal
-            if targeted:
-                update = -self.alpha * grad_sign # Move opposite to gradient
-            else:
-                update = self.alpha * grad_sign # Move along gradient
-
-            # Apply update only to samples that haven't succeeded yet
-            x_adv[active_mask] = x_adv[active_mask] + update[active_mask]
+            # Apply the update step
+            x_adv = x_adv + update
 
             # --- Projection Steps ---
-            # Project x_adv to stay within the epsilon-ball of x_orig
-            # Calculate the perturbation relative to original
+            # Project perturbation (eta) back into L-inf ball around x_orig
             eta = x_adv - x_orig
-            # Clamp the perturbation to [-eps, eps]
             eta = torch.clamp(eta, min=-self.eps, max=self.eps)
-            # Apply the clamped perturbation back to the original image
-            x_adv = x_orig + eta
+            # Apply clamped perturbation and clamp result to valid image range [0, 1]
+            x_adv = torch.clamp(x_orig + eta, min=0., max=1.)
 
-            # Project x_adv to be within the valid image range [0, 1]
-            x_adv = torch.clamp(x_adv, min=0., max=1.)
-
-            # Detach x_adv for the next iteration or final return
+            # Detach for the next iteration or final return
             x_adv = x_adv.detach()
 
-            # --- Check Success & Update Best (for early stopping) ---
-            if self.early_stop:
-                with torch.no_grad():
-                    # Evaluate the current adversarial examples
-                    outputs_check = self.model(x_adv)
-                    predicted_check = torch.argmax(outputs_check, dim=1)
-
-                    # Check success condition based on attack type
-                    if targeted:
-                        current_success = (predicted_check == y)
-                    else:
-                        current_success = (predicted_check != y)
-
-                    # Find samples that *newly* succeeded on this iteration
-                    newly_succeeded_mask = current_success & (~has_succeeded)
-
-                    # Update the master success tracker
-                    has_succeeded = torch.logical_or(has_succeeded, current_success)
-
-                    # Store the newly successful adversarial examples in x_adv_best
-                    x_adv_best[newly_succeeded_mask] = x_adv[newly_succeeded_mask]
-
-
-        # --- Final Assertions ---
+        # --- Final Assertions (Optional but Recommended) ---
         tolerance = 1e-6
         assert torch.all(x_adv >= 0. - tolerance) and torch.all(x_adv <= 1. + tolerance), \
             "Final x_adv values out of [0, 1] range"
-        # Check L-inf distance from original using the final x_adv
         assert torch.all(torch.abs(x_adv - x_orig) <= self.eps + tolerance), \
             f"Final max perturbation {torch.max(torch.abs(x_adv - x_orig))} exceeds eps {self.eps}"
 
-        # If early stopping, return the best adversarial example found for each sample
-        # Otherwise, return the result from the last iteration
-        return x_adv_best if self.early_stop else x_adv
+        # Return the result after n iterations (ignoring early stopping logic for now)
+        return x_adv
 
 
 class NESBBoxPGDAttack:

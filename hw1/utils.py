@@ -70,31 +70,41 @@ def run_whitebox_attack(attack, data_loader, targeted, device, n_classes=4):
     2- True labels in case of untargeted attacks, and target labels in
        case of targeted attacks.
     """
-    all_x_adv = []
-    all_y = []
-    model = attack.model # Get model from attack object for eval mode setting
-    model.eval()
+    all_x_adv_list = []
+    all_y_list = []
+    model = attack.model # Get model reference from attack object
+    model.eval()     # Ensure model is in eval mode
 
     for x_batch, y_batch_true in data_loader:
-        x_batch, y_batch_true = x_batch.to(device), y_batch_true.to(device)
+        # Move data to the designated device
+        x_batch_dev = x_batch.to(device)
+        y_batch_true_dev = y_batch_true.to(device)
 
         if targeted:
             # Generate random target labels different from true labels
-            offset = torch.randint(1, n_classes, (y_batch_true.size(0),), device=device)
-            y_batch_target = (y_batch_true + offset) % n_classes
-            x_batch_adv = attack.execute(x_batch, y_batch_target, targeted=True)
-            all_x_adv.append(x_batch_adv.cpu().detach())
-            all_y.append(y_batch_target.cpu().detach())
+            # Ensure offset is between 1 and n_classes-1
+            offset = torch.randint(1, n_classes, (y_batch_true_dev.size(0),), device=device)
+            y_batch_target_dev = (y_batch_true_dev + offset) % n_classes
+
+            # Execute targeted attack
+            x_batch_adv = attack.execute(x_batch_dev, y_batch_target_dev, targeted=True)
+
+            # Store results (move back to CPU for collection)
+            all_x_adv_list.append(x_batch_adv.cpu().detach())
+            all_y_list.append(y_batch_target_dev.cpu().detach()) # Store target labels
         else:
-            x_batch_adv = attack.execute(x_batch, y_batch_true, targeted=False)
-            all_x_adv.append(x_batch_adv.cpu().detach())
-            all_y.append(y_batch_true.cpu().detach()) # Use true labels for untargeted
+            # Execute untargeted attack
+            x_batch_adv = attack.execute(x_batch_dev, y_batch_true_dev, targeted=False)
 
-    # Concatenate results from all batches
-    x_adv_tensor = torch.cat(all_x_adv, dim=0)
-    y_tensor = torch.cat(all_y, dim=0)
+            # Store results (move back to CPU for collection)
+            all_x_adv_list.append(x_batch_adv.cpu().detach())
+            all_y_list.append(y_batch_true_dev.cpu().detach()) # Store true labels
 
-    return x_adv_tensor, y_tensor
+    # Concatenate all batch results into single tensors
+    final_x_adv = torch.cat(all_x_adv_list, dim=0)
+    final_y = torch.cat(all_y_list, dim=0)
+
+    return final_x_adv, final_y
 
 
 def run_blackbox_attack(attack, data_loader, targeted, device, n_classes=4):
