@@ -308,4 +308,73 @@ class PGDEnsembleAttack:
         attacks. The method returns the adversarially perturbed samples, which
         lie in the ranges [0, 1] and [x-eps, x+eps].
         """
-        pass  # FILL ME
+        for model in self.models:
+            model.eval()
+
+        x_orig = x.clone().detach()
+        x_adv = x.clone().detach()
+        device = x.device
+        batch_size = x.size(0)
+
+        if self.rand_init:
+            noise = torch.zeros_like(x_adv).uniform_(-self.eps, self.eps)
+            x_adv = torch.clamp(x_adv + noise, 0., 1.)
+            x_adv = torch.max(torch.min(x_adv, x_orig + self.eps), x_orig - self.eps)
+            x_adv = x_adv.detach()
+
+        has_succeeded_all = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        x_adv_best = x_adv.clone().detach()
+
+        for i in range(self.n):
+            active_mask = ~has_succeeded_all
+            if self.early_stop and not active_mask.any():
+                break
+
+            x_adv_iter = x_adv.clone().detach().requires_grad_(True)
+            accumulated_grad = torch.zeros_like(x_adv_iter, device=device)
+
+            # Accumulate gradients from all models
+            for model in self.models:
+                model.zero_grad()
+                outputs = model(x_adv_iter)
+                loss_per_sample = self.loss_func(outputs, y)
+                scalar_loss = loss_per_sample.mean()
+                scalar_loss.backward()
+                if x_adv_iter.grad is not None:
+                    accumulated_grad += x_adv_iter.grad.detach()
+                    x_adv_iter.grad.zero_()
+
+            avg_grad = accumulated_grad / len(self.models)
+            grad_sign = avg_grad.sign()
+            x_adv = x_adv.detach()
+
+            if targeted:
+                update = -self.alpha * grad_sign
+            else:
+                update = self.alpha * grad_sign
+
+            x_adv[active_mask] = x_adv[active_mask] + update[active_mask]
+            eta = x_adv - x_orig
+            eta = torch.clamp(eta, min=-self.eps, max=self.eps)
+            x_adv = torch.clamp(x_orig + eta, min=0., max=1.)
+            x_adv = x_adv.detach()
+
+            # Early stopping check: success against all models required
+            if self.early_stop:
+                 with torch.no_grad():
+                    current_success_all_models = torch.ones(batch_size, dtype=torch.bool, device=device)
+                    for model in self.models:
+                        outputs_check = model(x_adv)
+                        predicted_check = torch.argmax(outputs_check, dim=1)
+                        success_this_model = (predicted_check == y) if targeted else (predicted_check != y)
+                        current_success_all_models &= success_this_model
+                    newly_succeeded_mask = current_success_all_models & (~has_succeeded_all) # again, cool oparation
+                    has_succeeded_all = torch.logical_or(has_succeeded_all, current_success_all_models)
+                    x_adv_best[newly_succeeded_mask] = x_adv[newly_succeeded_mask]
+
+        tolerance = 1e-6
+        final_result = x_adv_best if self.early_stop else x_adv
+        assert torch.all(final_result >= 0. - tolerance) and torch.all(final_result <= 1. + tolerance)
+        assert torch.all(torch.abs(final_result - x_orig) <= self.eps + tolerance)
+
+        return final_result

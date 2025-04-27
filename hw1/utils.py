@@ -72,8 +72,6 @@ def run_whitebox_attack(attack, data_loader, targeted, device, n_classes=4):
     """
     all_x_adv_list = []
     all_y_list = []
-    model = attack.model
-    model.eval()
 
     for x_batch, y_batch_true in data_loader:
         x_batch_dev = x_batch.to(device)

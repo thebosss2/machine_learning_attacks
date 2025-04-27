@@ -46,42 +46,43 @@ for targeted in [False, True]:
         y_true_untargeted_to_save = y
 
 # excecute targeted and untargeted black-box attacks w/ and wo/ momentum
-# n_queries_all = []
-# for momentum in [0, 0.9]:
-#     for targeted in [False, True]:
-#         bb_attack.momentum = momentum
-#         x_adv, y, n_queries = run_blackbox_attack(bb_attack, data_loader, targeted, device)
-#         sr = compute_attack_success(model, x_adv, y, consts.BATCH_SIZE, targeted, device)
-#         median_queries = torch.median(n_queries)
-#         if targeted:
-#             print(f'Targeted black-box attack (momentum={momentum:0.2f}):')
-#         else:
-#             print(f'Untargeted black-box attack (momentum={momentum:0.2f}):')
-#         print(f'\t- success rate: {sr:0.4f}\n\t- median(# queries): {median_queries}')
-#         n_queries_all.append(n_queries.detach().to('cpu'))
+n_queries_all = []
+for momentum in [0, 0.9]:
+    for targeted in [False, True]:
+        bb_attack.momentum = momentum
+        x_adv, y, n_queries = run_blackbox_attack(bb_attack, data_loader, targeted, device)
+        sr = compute_attack_success(model, x_adv, y, consts.BATCH_SIZE, targeted, device)
+        median_queries = torch.median(n_queries)
+        if targeted:
+            print(f'Targeted black-box attack (momentum={momentum:0.2f}):')
+        else:
+            print(f'Untargeted black-box attack (momentum={momentum:0.2f}):')
+        print(f'\t- success rate: {sr:0.4f}\n\t- median(# queries): {median_queries}')
+        n_queries_all.append(n_queries.detach().to('cpu'))
 
-# # box-plot # queries wo/ and w/ momentum for untargeted attacks
-# plt.figure()
-# plt.boxplot([n_queries_all[0], n_queries_all[2]])
-# plt.xticks(range(1, 3), ['0.0', '0.9'])
-# plt.title('untargeted')
-# plt.xlabel('momentum')
-# plt.ylabel('# queries')
-# plt.savefig('bbox-n_queries_untargeted.jpg')
+# box-plot # queries wo/ and w/ momentum for untargeted attacks
+plt.figure()
+plt.boxplot([n_queries_all[0], n_queries_all[2]])
+plt.xticks(range(1, 3), ['0.0', '0.9'])
+plt.title('untargeted')
+plt.xlabel('momentum')
+plt.ylabel('# queries')
+plt.savefig('bbox-n_queries_untargeted.jpg')
 
-# # box-plot # queries wo/ and w/ momentum for targeted attacks
-# plt.figure()
-# plt.boxplot([n_queries_all[1], n_queries_all[3]])
-# plt.xticks(range(1, 3), ['0.0', '0.9'])
-# plt.title('targeted')
-# plt.xlabel('momentum')
-# plt.ylabel('# queries')
-# plt.savefig('bbox-n_queries_targeted.jpg')
+# box-plot # queries wo/ and w/ momentum for targeted attacks
+plt.figure()
+plt.boxplot([n_queries_all[1], n_queries_all[3]])
+plt.xticks(range(1, 3), ['0.0', '0.9'])
+plt.title('targeted')
+plt.xlabel('momentum')
+plt.ylabel('# queries')
+plt.savefig('bbox-n_queries_targeted.jpg')
 
 
 
 
 # I added to save images
+# You can comment it if you want
 import os
 from  torchvision import utils as us
 print("Attempting to save untargeted attack examples...")
