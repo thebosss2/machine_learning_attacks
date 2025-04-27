@@ -6,6 +6,7 @@ import models
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
+from random import randrange
 
 
 def load_pretrained_cnn(cnn_id, n_classes=4, models_dir='trained-models/'):
@@ -175,7 +176,10 @@ def binary(num):
     binary representation (in big-endian, where the string only
     contains '0' and '1' characters).
     """
-    pass  # FILL ME
+    packed = struct.pack('>f', num) # Pack the float into 4 bytes
+    integers = struct.unpack('>I', packed) # unpack as an unsigned integer 'I' to get its raw bits
+    int_representation = integers[0]
+    return f'{int_representation:032b}'
 
 
 def float32(binary):
@@ -184,7 +188,10 @@ def float32(binary):
     binary representations of float32 numbers into float32 and returns the
     result.
     """
-    pass  # FILL ME
+    int_representation = int(binary, 2)
+    packed = struct.pack('>I', int_representation)
+    float_val = struct.unpack('>f', packed)
+    return float_val[0]
 
 
 def random_bit_flip(w):
@@ -194,4 +201,12 @@ def random_bit_flip(w):
     1- The weight with the bit flipped
     2- The index of the flipped bit in {0, 1, ..., 31}
     """
-    pass  # FILL ME
+    binary_w = binary(w)
+    bit_idx_to_flip = randrange(32)
+    binary_list = list(binary_w)
+    original_bit = binary_list[bit_idx_to_flip]
+    flipped_bit = '1' if original_bit == '0' else '0'
+    binary_list[bit_idx_to_flip] = flipped_bit
+    flipped_binary_w = "".join(binary_list)
+    flipped_w = float32(flipped_binary_w)
+    return flipped_w, bit_idx_to_flip

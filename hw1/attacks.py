@@ -70,11 +70,6 @@ class PGDAttack:
             self.model.zero_grad()
             scalar_loss.backward()
 
-            if x_adv_iter.grad is None:
-                print(f"Warning: No gradient computed for x_adv_iter at iteration {i}. Skipping update.")
-                x_adv = x_adv.detach()
-                continue
-
             grad_sign = x_adv_iter.grad.sign()
             x_adv = x_adv.detach()
 
@@ -219,7 +214,7 @@ class NESBBoxPGDAttack:
         for i in range(self.n):
             active_mask = ~has_succeeded
             if self.early_stop and not active_mask.any():
-                # print(f"BB Early stopping at iteration {i+1}/{self.n}") # Optional debug
+                # print(f"Early stopping at iteration {i+1}/{self.n}") # Optional debug
                 break
 
             # NES Gradient Estimation

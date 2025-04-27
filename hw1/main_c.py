@@ -43,7 +43,16 @@ for layer_name in layers:
         W = layer.weight
         W.requires_grad = False
         for _ in range(consts.BF_PER_LAYER):
-            # FILL ME: flip a random bit in a randomly picked weight, measure RAD, and restore weight
+            # start of the fill me code
+            rand_weight_idx_flat = random.randrange(W.numel())
+            multi_dim_idx = np.unravel_index(rand_weight_idx_flat, W.shape)
+            original_weight_val = W[multi_dim_idx].item()
+            flipped_weight_val, bf_idx = utils.random_bit_flip(original_weight_val)
+            W[multi_dim_idx] = flipped_weight_val # Update the weight
+            acc_bf = utils.compute_accuracy(model, data_loader, device)
+            rad = (acc_orig - acc_bf) / acc_orig
+            W[multi_dim_idx] = original_weight_val # restore to original value so we don't destroy it
+            # end of fill me code
             RADs_bf_idx[bf_idx].append(rad)
             RADs_all.append(rad)
 
@@ -55,5 +64,13 @@ print(f'RAD>15%: {np.sum(RADs_all > 0.15) / RADs_all.size:0.4f}')
 
 # boxplots: bit-flip index vs. RAD
 plt.figure()
-# FILL ME
+# start of fill me code
+boxplot_data = [RADs_bf_idx[bf_idx] for bf_idx in range(32)]
+plt.boxplot(boxplot_data)
+plt.xlabel('Bit-flip index (0-31)')
+plt.ylabel('RAD')
+plt.title('RAD Distribution per Bit-flip Index')
+plt.xticks(ticks=np.arange(1, 33), labels=np.arange(0, 32))
+plt.grid(axis='y', linestyle='--')
+# end of fill me code 
 plt.savefig('bf_idx-vs-RAD.jpg')

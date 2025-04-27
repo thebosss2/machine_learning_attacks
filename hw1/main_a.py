@@ -17,7 +17,6 @@ np.random.seed(consts.SEED)
 
 # GPU available?
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-print(device)
 # load model and dataset
 model = load_pretrained_cnn(0)
 model.to(device)
@@ -79,65 +78,47 @@ plt.ylabel('# queries')
 plt.savefig('bbox-n_queries_targeted.jpg')
 
 
+# I added this peace of code to save images
+# You can change it to true to save the images
+DO_SAVE = False
+if DO_SAVE:
+    import os
+    from  torchvision import utils as us
+    print("Attempting to save untargeted attack examples...")
+    num_examples_to_save = 5
+    saved_count = 0
+    save_dir = "saved_wb_untargeted_examples"
 
+    if x_adv_untargeted_to_save is not None and y_true_untargeted_to_save is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        model.eval()
+        with torch.no_grad():
+            successful_indices = []
+            predictions_on_adv = []
+            for i in range(0, len(x_adv_untargeted_to_save), consts.BATCH_SIZE):
+                x_batch_adv = x_adv_untargeted_to_save[i:i + consts.BATCH_SIZE].to(device)
+                outputs = model(x_batch_adv)
+                preds = torch.argmax(outputs, dim=1)
+                predictions_on_adv.append(preds.cpu())
+            all_preds_adv = torch.cat(predictions_on_adv)
+            for idx in range(len(dataset)):
+                true_label = y_true_untargeted_to_save[idx].item() # Get original true label
+                predicted_label = all_preds_adv[idx].item() # Get prediction on adversarial example
 
-# I added to save images
-# You can comment it if you want
-import os
-from  torchvision import utils as us
-print("Attempting to save untargeted attack examples...")
-num_examples_to_save = 5
-saved_count = 0
-save_dir = "saved_wb_untargeted_examples"
-
-if x_adv_untargeted_to_save is not None and y_true_untargeted_to_save is not None:
-    os.makedirs(save_dir, exist_ok=True)
-    model.eval() # Ensure model is in eval mode
-    with torch.no_grad():
-        # Need to iterate through dataset to find successful examples AND get originals
-        # This is less efficient than modifying run_whitebox_attack, but adheres to constraint
-        successful_indices = []
-        predictions_on_adv = []
-        # Get all predictions on adversarial examples first
-        for i in range(0, len(x_adv_untargeted_to_save), consts.BATCH_SIZE):
-             x_batch_adv = x_adv_untargeted_to_save[i:i + consts.BATCH_SIZE].to(device)
-             outputs = model(x_batch_adv)
-             preds = torch.argmax(outputs, dim=1)
-             predictions_on_adv.append(preds.cpu())
-        all_preds_adv = torch.cat(predictions_on_adv)
-
-        # Now find successful indices
-        for idx in range(len(dataset)):
-            # Check if attack succeeded for this index
-            # Success means model prediction on x_adv is different from true label
-            true_label = y_true_untargeted_to_save[idx].item() # Get original true label
-            predicted_label = all_preds_adv[idx].item() # Get prediction on adversarial example
-
-            if predicted_label != true_label: # Check for success
-                if saved_count < num_examples_to_save:
-                    # Get original image
-                    x_orig, _ = dataset[idx] # Get tensor directly
-                    # Get corresponding adversarial image
-                    x_adv_img = x_adv_untargeted_to_save[idx]
-
-                    # Combine original and adversarial side-by-side for comparison
-                    # Ensure they have the same dimensions if needed (should be fine here)
-                    comparison_img = torch.cat((x_orig, x_adv_img), dim=2) # Concatenate horizontally
-
-                    # ---- Create new filename ----
-                    filename = f"untargeted_idx{idx}_orig{true_label}_adv{predicted_label}.png"
-                    save_path = os.path.join(save_dir, filename)
-                    # ---- End of filename creation ----
-
-                    # Save the comparison image
-                    us.save_image(comparison_img, save_path)
-                    saved_count += 1
-                else:
-                    break # Stop once we have saved enough examples
-
-    if saved_count > 0:
-        print(f"Saved {saved_count} untargeted attack comparison examples to '{save_dir}'")
+                if predicted_label != true_label:
+                    if saved_count < num_examples_to_save:
+                        x_orig, _ = dataset[idx] 
+                        x_adv_img = x_adv_untargeted_to_save[idx]
+                        comparison_img = torch.cat((x_orig, x_adv_img), dim=2) # Concatenate horizontally
+                        filename = f"untargeted_idx{idx}_orig{true_label}_adv{predicted_label}.png"
+                        save_path = os.path.join(save_dir, filename)
+                        us.save_image(comparison_img, save_path)
+                        saved_count += 1
+                    else:
+                        break
+        if saved_count > 0:
+            print(f"Saved {saved_count} untargeted attack comparison examples to '{save_dir}'")
+        else:
+            print("No successful untargeted attacks found to save.")
     else:
-        print("No successful untargeted attacks found to save.")
-else:
-    print("Untargeted attack results were not stored correctly.")
+        print("Untargeted attack results were not stored correctly.")
