@@ -156,8 +156,8 @@ class NeuralCleanse:
     A method for detecting and reverse-engineering backdoors.
     """
 
-    def __init__(self, model, dim=(1, 3, 32, 32), lambda_c=0.0005,
-                 step_size=0.005, niters=2000):
+    def __init__(self, model, dim=(1, 3, 32, 32), lambda_c=0.04,
+                 step_size=0.05, niters=2000):
         """
         Arguments:
         - model: model to test
@@ -186,10 +186,44 @@ class NeuralCleanse:
         - trigger: 
         """
         # randomly initialize mask and trigger in [0,1] - FILL ME
-        
+        mask = torch.rand((1, self.dim[1], self.dim[2], self.dim[3]), device=device, requires_grad=True)
+        trigger = torch.rand((1, self.dim[1], self.dim[2], self.dim[3]), device=device, requires_grad=True)
+
+        optimizer = torch.optim.SGD([mask, trigger], lr=self.step_size)
 
         # run self.niters of SGD to find (potential) trigger and mask - FILL ME
-        
+        iters_count = 0
+        while iters_count < self.niters:
+            for source_samples, source_labels in data_loader:
+                if iters_count >= self.niters:
+                    break
+
+                # per the description, only use inputs not originally from the target class
+                clean_inputs = source_samples[source_labels != c_t].to(device)
+                if clean_inputs.shape[0] == 0:
+                    continue
+
+                # create a tensor of target labels
+                targets = torch.full((clean_inputs.shape[0],), c_t, dtype=torch.long, device=device)
+
+                # apply the trigger to the clean inputs
+                stamped_inputs = torch.clamp((1 - mask) * clean_inputs + mask * trigger, 0, 1)
+    
+                # zero gradients, calculate loss, and take an optimization step
+                optimizer.zero_grad()
+                outputs = self.model(stamped_inputs)
+                class_loss = self.loss_func(outputs, targets)
+                mask_norm = torch.sum(torch.abs(mask))
+                total_loss = class_loss + self.lambda_c * mask_norm
+                total_loss.backward()
+                optimizer.step()
+
+                # clamp the mask and trigger to ensure they remain valid
+                with torch.no_grad():
+                    mask.clamp_(0, 1)
+                    trigger.clamp_(0, 1)
+
+                iters_count += 1
 
         # done
-        return mask, trigger
+        return mask.detach(), trigger.detach()
