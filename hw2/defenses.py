@@ -32,21 +32,49 @@ def free_adv_train(model, data_tr, criterion, optimizer, lr_scheduler, \
                            shuffle=True,
                            pin_memory=True,
                            num_workers=dl_nw)
-                           
 
     # init delta (adv. perturbation) - FILL ME
-    
-
-    # total number of updates - FILL ME
-    
+    delta = torch.zeros(batch_size, 3, 32, 32, device=device)
 
     # when to update lr
     scheduler_step_iters = int(np.ceil(len(data_tr)/batch_size))
 
     # train - FILLE ME
-    
-    
-    # done
+    model.train()
+    for epoch in range(epochs):
+        for i, (images, labels) in enumerate(loader_tr):
+            images, labels = images.to(device), labels.to(device)
+
+            # Get a slice of delta that matches the current batch size
+            delta_slice = delta[:images.shape[0]] 
+
+            # repeat the mini-batch m times
+            for _ in range(m):
+                delta_slice.requires_grad = True
+                # apply perturbation to the images and clamp to valid range
+                perturbed_image = torch.clamp(images + delta_slice, 0, 1)
+
+                outputs = model(perturbed_image)
+                loss = criterion(outputs, labels)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # update the delta slice
+                delta_grad = delta_slice.grad.detach()
+                delta_slice = delta_slice.detach()
+                delta_slice = delta_slice + eps * delta_grad.sign()
+                delta_slice = torch.clamp(delta_slice, -eps, eps)
+                # ensure the new delta doesn't push the image out of bounds
+                delta_slice = torch.clamp(images + delta_slice, 0, 1) - images
+
+                # write the updated slice back to the main delta tensor
+                delta.data[:images.shape[0]] = delta_slice.data
+
+        # step the learning rate scheduler once per epoch
+        lr_scheduler.step()
+
     return model
 
 
@@ -90,13 +118,24 @@ class SmoothedModel():
         """
         
         # find prediction (top class c) - FILL ME
-        
-        
-        # compute lower bound on p_c - FILL ME
-        
+        base_counts = self._sample_under_noise(x, n0, batch_size)
+        top_class = base_counts.argmax().item()
 
-        # done
-        return c, radius
+
+        # compute lower bound on p_c - FILL ME
+        certify_counts = self._sample_under_noise(x, n, batch_size)
+        n_c = certify_counts[top_class]
+
+        # Use the Clopper-Pearson method to find the lower bound of the confidence interval for the true probability of predicting the top class.
+        p_c_lower = proportion_confint(n_c, n, alpha=2 * alpha, method="beta")[0]
+
+        if p_c_lower <= 0.5:
+            return self.ABSTAIN, 0.0
+        else:
+            # Calculate the certified radius using the Gaussian CDF.
+            radius = self.sigma * norm.ppf(p_c_lower)
+
+        return top_class, radius
         
 
 class NeuralCleanse:

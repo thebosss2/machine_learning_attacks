@@ -59,7 +59,18 @@ def plot_radii(radii):
     x = [] # radius
     y = [] # accuracy
     # derive x and y from the certified radii - FILL ME
-    
+    n_total = len(radii)
+    if n_total > 0:
+        # Sort radii in ascending order to make it easy to calculate
+        # the fraction of samples certified for at least a given radius.
+        radii.sort()
+        for r in radii:
+            # For a given radius r, the accuracy is the fraction of points
+            # with a certified radius >= r.
+            certified_count = sum(1 for certified_r in radii if certified_r >= r)
+            x.append(r)
+            y.append(certified_count / n_total)
+
     # plot
     plt.plot(x,y)
 
