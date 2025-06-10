@@ -42,6 +42,7 @@ def free_adv_train(model, data_tr, criterion, optimizer, lr_scheduler, \
     # train - FILLE ME
     model.train()
     for epoch in range(epochs):
+
         for i, (images, labels) in enumerate(loader_tr):
             images, labels = images.to(device), labels.to(device)
 
@@ -98,8 +99,20 @@ class SmoothedModel():
         array counting how many times each class was assigned the
         max confidence).
         """
-        # FILL ME
-        pass
+        n_classes = 4 # cifar-10 classes
+        total_counts = np.zeros(n_classes, dtype=int)
+        with torch.no_grad():
+            n_batches = int(np.ceil(n / batch_size))
+            for _ in range(n_batches):
+                current_batch_size = min(batch_size, n)
+                n -= current_batch_size
+
+                batch = x.repeat((current_batch_size, 1, 1, 1))
+                noise = torch.randn_like(batch) * self.sigma
+                noisy_batch = batch + noise
+                predictions = self.model(noisy_batch).argmax(1)
+                total_counts += np.bincount(predictions.cpu().numpy(), minlength=n_classes)
+        return total_counts
         
     def certify(self, x, n0, n, alpha, batch_size):
         """
